@@ -23,6 +23,12 @@ public class RiskyCaseMappingSample {
         System.out.println("Case Mapping 5: "+("hac\u212A".toLowerCase().equals("hack"))); //RISKY!
     }
 
+    public static void caseMappingMethodReferenceSuite(java.util.Optional<String> anOptional) {
+        System.out.println("Case Mapping ref 1: "+anOptional.map("HACK"::equalsIgnoreCase)); //RISKY!
+        System.out.println("Case Mapping ref 2: "+anOptional.map(String::toUpperCase).filter("HACK"::equals)); //RISKY!
+        System.out.println("Case Mapping ref 3: "+anOptional.map(String::toLowerCase).filter("hack"::equals)); //RISKY!
+    }
+
     public static void caseMappingFalsePositive(String input) {
         System.out.println("Hello "+input.toLowerCase());
         System.out.println("Hello "+input.toUpperCase());

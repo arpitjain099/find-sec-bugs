@@ -91,6 +91,38 @@ public class ImproperHandlingUnicodeDetectorTest extends BaseDetectorTest {
 
 
     @Test
+    public void detectImproperCaseMappingMethodReference() throws Exception {
+        //Locate test code
+        String[] files = {
+                getClassFilePath("testcode/unicode/RiskyCaseMappingSample.java")
+        };
+
+        //Run the analysis
+        EasyBugReporter reporter = spy(new SecurityReporter());
+        analyze(files, reporter);
+
+        for(Integer line : Arrays.asList(27,28,29)) {
+            verify(reporter).doReportBug(
+                    bugDefinition()
+                            .bugType("IMPROPER_UNICODE")
+                            .inClass("RiskyCaseMappingSample")
+                            .inMethod("caseMappingMethodReferenceSuite")
+                            .withPriority("Low")
+                            .atLine(line)
+                            .build()
+            );
+        }
+
+        verify(reporter, times(3)).doReportBug(
+                bugDefinition()
+                        .bugType("IMPROPER_UNICODE")
+                        .inClass("RiskyCaseMappingSample")
+                        .inMethod("caseMappingMethodReferenceSuite").build()
+        );
+    }
+
+
+    @Test
     public void detectImproperCaseMappingAvoidFP() throws Exception {
         //Locate test code
         String[] files = {

@@ -27,7 +27,17 @@ import edu.umd.cs.findbugs.ba.ClassContext;
 import edu.umd.cs.findbugs.ba.Location;
 import edu.umd.cs.findbugs.bcel.OpcodeStackDetector;
 import org.apache.bcel.Const;
+import org.apache.bcel.classfile.Attribute;
+import org.apache.bcel.classfile.BootstrapMethod;
+import org.apache.bcel.classfile.BootstrapMethods;
+import org.apache.bcel.classfile.Constant;
+import org.apache.bcel.classfile.ConstantCP;
+import org.apache.bcel.classfile.ConstantInvokeDynamic;
+import org.apache.bcel.classfile.ConstantMethodHandle;
+import org.apache.bcel.classfile.ConstantNameAndType;
+import org.apache.bcel.classfile.ConstantPool;
 import org.apache.bcel.generic.ConstantPoolGen;
+import org.apache.bcel.generic.INVOKEDYNAMIC;
 import org.apache.bcel.generic.INVOKEVIRTUAL;
 import org.apache.bcel.generic.Instruction;
 
@@ -48,6 +58,60 @@ public class ImproperHandlingUnicodeDetector extends OpcodeStackDetector {
         BugInstance bug = new BugInstance(this, IMPROPER_UNICODE_TYPE, Priorities.LOW_PRIORITY) //
                 .addClass(this).addMethod(this).addSourceLine(this);
         bugReporter.reportBug(bug);
+    }
+
+    /**
+     * Resolves the target method that a method reference (an INVOKEDYNAMIC backed by
+     * LambdaMetafactory) points to. For example {@code ""::equalsIgnoreCase} compiles to an
+     * INVOKEDYNAMIC whose second bootstrap argument is a MethodHandle to
+     * {@code java/lang/String.equalsIgnoreCase}.
+     *
+     * @return The slashed class name and method name of the referenced method,
+     *         or {@code null} when the operand is not a LambdaMetafactory method reference.
+     */
+    private String[] getMethodReferenceTarget(ConstantInvokeDynamic indy) {
+        ConstantPool cp = getThisClass().getConstantPool();
+
+        BootstrapMethods bootstrapMethods = null;
+        for (Attribute attribute : getThisClass().getAttributes()) {
+            if (attribute instanceof BootstrapMethods) {
+                bootstrapMethods = (BootstrapMethods) attribute;
+                break;
+            }
+        }
+        if (bootstrapMethods == null) {
+            return null;
+        }
+
+        BootstrapMethod[] methods = bootstrapMethods.getBootstrapMethods();
+        int attrIndex = indy.getBootstrapMethodAttrIndex();
+        if (attrIndex < 0 || attrIndex >= methods.length) {
+            return null;
+        }
+
+        // For LambdaMetafactory.metafactory, the bootstrap arguments are:
+        // [0] the erased SAM type, [1] the MethodHandle of the implementation, [2] the instantiated type.
+        int[] bootstrapArguments = methods[attrIndex].getBootstrapArguments();
+        if (bootstrapArguments.length < 2) {
+            return null;
+        }
+
+        Constant implementation = cp.getConstant(bootstrapArguments[1]);
+        if (!(implementation instanceof ConstantMethodHandle)) {
+            return null;
+        }
+
+        Constant reference = cp.getConstant(((ConstantMethodHandle) implementation).getReferenceIndex());
+        if (!(reference instanceof ConstantCP)) {
+            return null;
+        }
+        ConstantCP methodRef = (ConstantCP) reference;
+
+        String className = cp.getConstantString(methodRef.getClassIndex(), Const.CONSTANT_Class);
+        ConstantNameAndType nameAndType = cp.getConstant(methodRef.getNameAndTypeIndex());
+        String methodName = nameAndType.getName(cp);
+
+        return new String[] { className, methodName };
     }
 
     /**
@@ -81,6 +145,18 @@ public class ImproperHandlingUnicodeDetector extends OpcodeStackDetector {
                 if(className.equals("java.lang.String") &&
                         (methodName.equals("equals") || methodName.equals("indexOf"))) {
                     return true;
+                }
+            }
+            // The comparison can also be written as a method reference, e.g. "ADMIN"::equals,
+            // which compiles to an INVOKEDYNAMIC backed by a LambdaMetafactory method handle.
+            else if(inst instanceof INVOKEDYNAMIC) {
+                Constant operand = cpg.getConstant(((INVOKEDYNAMIC) inst).getIndex());
+                if(operand instanceof ConstantInvokeDynamic) {
+                    String[] target = getMethodReferenceTarget((ConstantInvokeDynamic) operand);
+                    if(target != null && target[0].equals("java/lang/String") &&
+                            (target[1].equals("equals") || target[1].equals("indexOf"))) {
+                        return true;
+                    }
                 }
             }
         }
@@ -118,6 +194,21 @@ public class ImproperHandlingUnicodeDetector extends OpcodeStackDetector {
         else if (seen == Const.INVOKEVIRTUAL && getClassConstantOperand().equals("java/lang/String")
                 && getNameConstantOperand().equals("equalsIgnoreCase")) {
             reportBug();
+        }
+        // The same risky calls can be passed as method references, e.g. ""::equalsIgnoreCase or
+        // String::toUpperCase. These compile to an INVOKEDYNAMIC whose bootstrap method handle
+        // points at the target String method, so the INVOKEVIRTUAL branches above never see them.
+        else if (seen == Const.INVOKEDYNAMIC && getConstantRefOperand() instanceof ConstantInvokeDynamic) {
+            String[] target = getMethodReferenceTarget((ConstantInvokeDynamic) getConstantRefOperand());
+            if (target != null && target[0].equals("java/lang/String")) {
+                if (target[1].equals("equalsIgnoreCase")) {
+                    reportBug();
+                }
+                else if ((target[1].equals("toUpperCase") || target[1].equals("toLowerCase"))
+                        && hasComparisonInMethod()) {
+                    reportBug();
+                }
+            }
         }
 
     }
